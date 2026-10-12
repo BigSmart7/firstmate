@@ -5,7 +5,7 @@
 #   bin/fm-role.sh report
 #   bin/fm-role.sh check <project-dir> [upstream-consent <scope>]
 #
-#   report   prints one line: fm-role: <user|maintainer> [<scope>...] (<source>)
+#   report   prints one line: fm-role: <user|maintainer> [<scope>] (<source>)
 #            and, when a malformed or unverified input forced a closed result,
 #            " - <narrow reason>". The default with no config is plain
 #            "fm-role: user". bin/fm-session-start.sh emits this line in the
@@ -36,7 +36,7 @@ case ${1:-} in
 report)
   fm_role_resolve "$FM_HOME" "$CONFIG"
   line="fm-role: $FM_ROLE"
-  [ -z "$FM_ROLE_SCOPES" ] || line="$line $FM_ROLE_SCOPES"
+  [ -z "$FM_ROLE_SCOPE" ] || line="$line $FM_ROLE_SCOPE"
   case $FM_ROLE_SOURCE in
   local) line="$line (local)" ;;
   inherited) line="$line (inherited)" ;;

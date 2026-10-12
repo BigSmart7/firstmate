@@ -17,14 +17,16 @@
 # Role file: one directive line in config/firstmate-role (blank lines and
 # full-line # comments ignored), either
 #   user                                 - the default; may be omitted
-#   maintainer <host>/<owner>/<repo>[..] - this home develops firstmate for the
-#                                          named upstream(s)
+#   maintainer <host>/<owner>/<repo>     - this home develops firstmate for the
+#                                          named upstream
 # A scope names the publication target repository (where a PR lands), not a push
 # destination. In a secondmate home (marked by .fm-secondmate-home) a role file
 # authorizes nothing on its own: it is trusted only when the existing
 # config-inheritance receipt config/.fm-inherit-firstmate-role.generation proves
 # the exact bytes the parent last published there, so a child cannot upgrade
-# itself and a stale or unproven grant is dead on arrival.
+# itself and a stale or unproven grant is dead on arrival. The parent publishes
+# its resolved role (fm_role_inherit_payload), never its raw file, so a grant
+# the parent's own resolver rejects propagates as revocation.
 #
 # Self-repository detection compares the task's project dir against the running
 # code root by git identity - the shared common dir covers linked worktrees and
@@ -42,12 +44,14 @@
 #   fm_role_remote_identity <url> [<dir>]- host/owner/repo or path:<abs> or empty
 #   fm_role_publication_target <git-dir> - identity a default publication reaches
 #   fm_role_self_repo <project> <root>   - 0 when the task is on this firstmate
-#   fm_role_parse_file <file>            - sets FM_ROLE/FM_ROLE_SCOPES/FM_ROLE_DIAG
+#   fm_role_parse_file <file>            - sets FM_ROLE/FM_ROLE_SCOPE/FM_ROLE_DIAG
 #   fm_role_resolve <home> <config-dir>  - effective role; adds FM_ROLE_SOURCE
+#   fm_role_inherit_payload <home> <config-dir> <out-file>
+#                                        - stage the resolved role a parent publishes
 #   fm_role_gate_self_publish <home> <config> <project> <root> [consent]
 #                                        - 0 authorized, 1 refused, 2 not self-repo
 #
-# Global outputs: FM_ROLE (user|maintainer), FM_ROLE_SCOPES (space list),
+# Global outputs: FM_ROLE (user|maintainer), FM_ROLE_SCOPE (maintainer scope),
 # FM_ROLE_SOURCE (absent|local|inherited), FM_ROLE_DIAG (narrow refusal or
 # malformed-input reason), FM_ROLE_PUB_TARGET, FM_ROLE_PUB_AUTHORITY,
 # FM_ROLE_PUB_DENIAL.
@@ -167,8 +171,8 @@ fm_role_remote_identity() {
     host=${host#*@}
     host=${host%%:*}
     path=${rest#*/}
+    path=${path%"${path##*[!/]}"}
     path=${path%.git}
-    path=${path%/}
     [ -n "$host" ] && [ -n "$path" ] || return 0
     printf '%s/%s\n' "$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')" \
       "$(printf '%s' "$path" | tr '[:upper:]' '[:lower:]')"
@@ -188,8 +192,8 @@ fm_role_remote_identity() {
       ;;
     esac
     host=${host#*@}
+    path=${path%"${path##*[!/]}"}
     path=${path%.git}
-    path=${path%/}
     [ -n "$host" ] && [ -n "$path" ] || return 0
     printf '%s/%s\n' "$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')" \
       "$(printf '%s' "$path" | tr '[:upper:]' '[:lower:]')"
@@ -240,12 +244,14 @@ fm_role_self_repo() {
   [ -n "$ta" ] && [ -n "$tb" ] && [ "$ta" = "$tb" ]
 }
 
-# fm_role_parse_file <file> - parse one role file. Sets FM_ROLE, FM_ROLE_SCOPES,
+# fm_role_parse_file <file> - parse one role file. Sets FM_ROLE, FM_ROLE_SCOPE,
 # FM_ROLE_DIAG. rc 0 valid; rc 1 malformed; rc 2 absent (missing or not a file).
+# The whole file is read before any role is accepted, so a second directive
+# anywhere makes it malformed.
 fm_role_parse_file() {
-  local file=$1 line first tok scopes n=0
+  local file=$1 line directive=
   FM_ROLE=
-  FM_ROLE_SCOPES=
+  FM_ROLE_SCOPE=
   FM_ROLE_DIAG=
   if [ -L "$file" ]; then
     FM_ROLE_DIAG="role file must not be a symlink"
@@ -264,51 +270,46 @@ fm_role_parse_file() {
     case $line in
     '' | '#'*) continue ;;
     esac
-    n=$((n + 1))
-    if [ "$n" -ne 1 ]; then
+    if [ -n "$directive" ]; then
       FM_ROLE_DIAG="role file must hold exactly one directive line"
       return 1
     fi
-    set -f
-    # shellcheck disable=SC2086  # directive tokens are intentionally word-split
-    set -- $line
-    set +f
-    first=$1
-    shift
-    scopes=
-    for tok in "$@"; do
-      if ! fm_role_scope_valid "$tok"; then
-        FM_ROLE_DIAG="invalid repository scope '$tok'"
-        return 1
-      fi
-      tok=$(fm_role_scope_norm "$tok")
-      scopes=${scopes:+$scopes }$tok
-    done
-    case $first in
-    user)
-      if [ -n "$scopes" ]; then
-        FM_ROLE_DIAG="the user role takes no repository scope"
-        return 1
-      fi
-      FM_ROLE=user
-      ;;
-    maintainer)
-      if [ -z "$scopes" ]; then
-        FM_ROLE_DIAG="the maintainer role requires at least one repository scope"
-        return 1
-      fi
-      FM_ROLE=maintainer
-      FM_ROLE_SCOPES=$scopes
-      ;;
-    *)
-      FM_ROLE_DIAG="unknown role '$first' (expected user or maintainer)"
-      return 1
-      ;;
-    esac
-    return 0
+    directive=$line
   done <"$file"
-  FM_ROLE_DIAG="role file holds no directive"
-  return 1
+  if [ -z "$directive" ]; then
+    FM_ROLE_DIAG="role file holds no directive"
+    return 1
+  fi
+  set -f
+  # shellcheck disable=SC2086  # directive tokens are intentionally word-split
+  set -- $directive
+  set +f
+  case $1 in
+  user)
+    if [ "$#" -ne 1 ]; then
+      FM_ROLE_DIAG="the user role takes no repository scope"
+      return 1
+    fi
+    FM_ROLE=user
+    ;;
+  maintainer)
+    if [ "$#" -ne 2 ]; then
+      FM_ROLE_DIAG="the maintainer role requires exactly one repository scope"
+      return 1
+    fi
+    if ! fm_role_scope_valid "$2"; then
+      FM_ROLE_DIAG="invalid repository scope '$2'"
+      return 1
+    fi
+    FM_ROLE=maintainer
+    FM_ROLE_SCOPE=$(fm_role_scope_norm "$2")
+    ;;
+  *)
+    FM_ROLE_DIAG="unknown role '$1' (expected user or maintainer)"
+    return 1
+    ;;
+  esac
+  return 0
 }
 
 # fm_role_sha256_stdin - hex digest of stdin on either digest tool.
@@ -392,14 +393,14 @@ fm_role_inherit_check() {
 }
 
 # fm_role_resolve <home> <config-dir> - resolve the effective role. Sets
-# FM_ROLE, FM_ROLE_SCOPES, FM_ROLE_SOURCE (absent|local|inherited), FM_ROLE_DIAG.
+# FM_ROLE, FM_ROLE_SCOPE, FM_ROLE_SOURCE (absent|local|inherited), FM_ROLE_DIAG.
 # Always returns 0: every failure resolves to user with the narrow reason in
 # FM_ROLE_DIAG. A secondmate home (its .fm-secondmate-home marker) requires the
 # inheritance receipt for any grant; a file it cannot prove is dead on arrival.
 fm_role_resolve() {
   local home=$1 config=$2 role_file receipt cmd
   FM_ROLE=user
-  FM_ROLE_SCOPES=
+  FM_ROLE_SCOPE=
   # shellcheck disable=SC2034 # Output global, read by the sourcing caller.
   FM_ROLE_SOURCE=absent
   FM_ROLE_DIAG=
@@ -419,7 +420,7 @@ fm_role_resolve() {
       fi
       if ! fm_role_parse_file "$role_file"; then
         FM_ROLE=user
-        FM_ROLE_SCOPES=
+        FM_ROLE_SCOPE=
         FM_ROLE_DIAG="malformed inherited role: $FM_ROLE_DIAG"
       fi
       return 0
@@ -435,13 +436,26 @@ fm_role_resolve() {
     FM_ROLE_SOURCE=local
     if ! fm_role_parse_file "$role_file"; then
       FM_ROLE=user
-      FM_ROLE_SCOPES=
+      FM_ROLE_SCOPE=
       FM_ROLE_DIAG="malformed role file: $FM_ROLE_DIAG"
     fi
     return 0
   fi
   return 0
 }
+
+# fm_role_inherit_payload <home> <config-dir> <out-file> - stage the role this
+# home publishes to its secondmates: the resolved maintainer directive, or no
+# file at all when the home resolves to user for any reason (absent, user,
+# malformed, symlinked, or unproven), so propagation carries revocation rather
+# than raw bytes this home's own resolver rejects. Runs in a subshell so the
+# caller's FM_ROLE globals are untouched.
+fm_role_inherit_payload() (
+  rm -f "$3" || exit 1
+  fm_role_resolve "$1" "$2"
+  [ "$FM_ROLE" = maintainer ] || exit 0
+  printf 'maintainer %s\n' "$FM_ROLE_SCOPE" >"$3"
+)
 
 # fm_role_gate_self_publish <home> <config-dir> <project-dir> <code-root> [consent]
 # Evaluate whether this home may run a publication contract for a task on
@@ -488,14 +502,10 @@ fm_role_gate_self_publish() {
     FM_ROLE_PUB_AUTHORITY="task consent for $consent"
     return 0
   fi
-  if [ "$FM_ROLE" = maintainer ]; then
-    case " $FM_ROLE_SCOPES " in
-    *" $FM_ROLE_PUB_TARGET "*)
-      # shellcheck disable=SC2034 # Output global, read by the sourcing caller.
-      FM_ROLE_PUB_AUTHORITY="maintainer scope $FM_ROLE_PUB_TARGET"
-      return 0
-      ;;
-    esac
+  if [ "$FM_ROLE" = maintainer ] && [ "$FM_ROLE_SCOPE" = "$FM_ROLE_PUB_TARGET" ]; then
+    # shellcheck disable=SC2034 # Output global, read by the sourcing caller.
+    FM_ROLE_PUB_AUTHORITY="maintainer scope $FM_ROLE_PUB_TARGET"
+    return 0
   fi
   # shellcheck disable=SC2034 # Output global, read by the sourcing caller.
   FM_ROLE_PUB_DENIAL="this home runs as firstmate user/operator and holds no publication authority for $FM_ROLE_PUB_TARGET"

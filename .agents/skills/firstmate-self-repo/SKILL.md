@@ -38,7 +38,8 @@ This posture covers firstmate self-repair exactly the same way it covers a dispa
 ### Maintainer opt-in (standing)
 
 The operator writes `config/firstmate-role` by hand - it is gitignored and never travels through git.
-The file holds one directive line: `user`, or `maintainer <host>/<owner>/<repo> [<scope>...]` naming the upstream repository or repositories this home develops firstmate for.
+The file holds one directive line: `user`, or `maintainer <host>/<owner>/<repo>` naming the one upstream repository this home develops firstmate for.
+A fork maintainer contributing to the parent repository uses one-task consent, not a second standing scope.
 `docs/configuration.md` "Firstmate role" owns the operator-facing schema; `bin/fm-role-lib.sh` owns parsing, and `bin/fm-role.sh report` prints the resolved role (also surfaced in the session-start digest's HOME ROLE subsection).
 A malformed, unreadable, or unverifiable file resolves to user, never to a guess.
 
@@ -70,6 +71,6 @@ The boundary covers only traffic that writes to the upstream repository.
 
 ## Secondmates
 
-A secondmate home inherits `config/firstmate-role` through the same primary-authoritative propagation as other inheritable config (`bin/fm-config-inherit-lib.sh`), local and remote routes alike.
+A secondmate home inherits the primary's resolved role through the same primary-authoritative propagation as other inheritable config (`bin/fm-config-inherit-lib.sh`), local and remote routes alike; a primary file its own resolver rejects (malformed, symlinked, unverified) propagates as revocation, never as a grant.
 The grant is honored only while `config/.fm-inherit-firstmate-role.generation` proves the exact bytes the primary last published, so a child can never grant itself the role and a stale proof authorizes nothing: a removed or divergent receipt, a locally planted role file, and a failed propagation all resolve to user.
 Revocation converges the same way - the primary deleting its role file propagates an `absent` receipt downstream.

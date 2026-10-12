@@ -109,6 +109,16 @@ test_report_fails_closed_on_unsafe_input() {
   out=$(run_role "$home" report)
   assert_contains "$out" "fm-role: user" "a symlinked role file must resolve to user"
   assert_contains "$out" "must not be a symlink" "a symlinked role file must report the narrow problem"
+
+  home=$(make_role_home report-two-directives "$(printf 'maintainer github.com/kunchenguid/firstmate\n# trailing\nuser')")
+  out=$(run_role "$home" report)
+  assert_contains "$out" "fm-role: user" "a later directive must make the whole file malformed, not be ignored"
+  assert_contains "$out" "exactly one directive line" "a second directive must name the narrow problem"
+
+  home=$(make_role_home report-two-scopes 'maintainer github.com/kunchenguid/firstmate github.com/other/firstmate')
+  out=$(run_role "$home" report)
+  assert_contains "$out" "fm-role: user" "a maintainer directive naming two scopes must resolve to user"
+  assert_contains "$out" "exactly one repository scope" "a multi-scope directive must name the narrow problem"
   pass "fm-role.sh report: malformed, unknown, and unsafe input fails closed"
 }
 
@@ -179,6 +189,33 @@ test_check_wrong_scope_and_remote_presence_do_not_authorize() {
   expect_code 1 "$rc" "a second clone of the same upstream must still be gated"
   assert_contains "$out" "user/operator" "a second clone must be treated as firstmate's own repository"
   pass "fm-role.sh check: scope mismatch and mere upstream remote presence never authorize"
+}
+
+# Equivalent remote spellings of one upstream (trailing slash, .git suffix,
+# scp form) must normalize to one identity, so a second clone stays gated.
+# The code root here is a fixture with a known remote, independent of this
+# checkout's own remotes.
+test_check_equivalent_remote_spellings_are_one_repo() {
+  local root clone url user_home maint_home out rc
+  root="$TMP_ROOT/spelling-root"
+  git init -q "$root" || fail "could not initialize spelling-root fixture"
+  git -C "$root" remote add origin https://github.com/kunchenguid/firstmate
+  user_home=$(make_role_home spelling-user)
+  maint_home=$(make_role_home spelling-maint 'maintainer github.com/kunchenguid/firstmate')
+  for url in https://github.com/kunchenguid/firstmate.git/ \
+    https://github.com/kunchenguid/firstmate/ \
+    git@github.com:kunchenguid/firstmate.git/; do
+    clone="$TMP_ROOT/spelling-clone-$(printf '%s' "$url" | tr -c 'A-Za-z0-9' '_')"
+    git init -q "$clone" || fail "could not initialize spelling-clone fixture"
+    git -C "$clone" remote add origin "$url"
+    out=$(FM_ROOT_OVERRIDE="$root" FM_HOME="$user_home" FM_CONFIG_OVERRIDE="$user_home/config" \
+      "$ROLE" check "$clone" 2>&1); rc=$?
+    expect_code 1 "$rc" "a clone of $url must be gated as the same repository (got: $out)"
+    out=$(FM_ROOT_OVERRIDE="$root" FM_HOME="$maint_home" FM_CONFIG_OVERRIDE="$maint_home/config" \
+      "$ROLE" check "$clone" 2>&1); rc=$?
+    expect_code 0 "$rc" "the maintainer scope must cover a clone of $url (got: $out)"
+  done
+  pass "fm-role.sh check: equivalent remote spellings resolve to one publication target"
 }
 
 test_check_task_consent_authorizes_one_task() {
@@ -268,6 +305,19 @@ test_secondmate_inheritance_receipt_lifecycle() {
     expect_code 1 "$rc" "a forged-scope inherited grant covers no firstmate target"
   fi
 
+  # An inherited file that carries a second directive is malformed as a whole,
+  # even when its receipt proves the exact bytes.
+  printf 'maintainer %s\nuser\n' "${PUB_TARGET:-github.com/kunchenguid/firstmate}" > "$dst_config/firstmate-role"
+  {
+    printf '%s\n' "$((gen + 2))"
+    wc -c <"$dst_config/firstmate-role" | tr -d '[:space:]' | awk '{printf "%s\n", $1}'
+    fm_role_sha256_stdin <"$dst_config/firstmate-role"
+    printf 'put\n'
+  } > "$receipt"
+  out=$(run_role "$sm_home" report)
+  assert_contains "$out" "fm-role: user" "an inherited file with two directives must resolve to user"
+  assert_contains "$out" "malformed inherited role" "an inherited two-directive file must be named malformed"
+
   # Revocation: the parent's role file disappears, so propagation removes the
   # destination file and records the absence in the receipt.
   printf 'maintainer %s\n' "${PUB_TARGET:-github.com/kunchenguid/firstmate}" > "$dst_config/firstmate-role"
@@ -287,6 +337,49 @@ test_secondmate_inheritance_receipt_lifecycle() {
   assert_contains "$out" "fm-role: user" "a post-revocation self-plant must grant nothing"
   assert_contains "$out" "unverified inherited grant" "a self-plant after revocation must be named unverified"
   pass "secondmate home: inherited grants are receipt-proven, self-grants and revoked grants dead"
+}
+
+# The parent publishes its resolved role, not its raw file: a primary role
+# file the primary's own resolver rejects (symlinked or malformed) propagates
+# as revocation, never as a copied grant.
+test_secondmate_inherits_only_resolved_primary_role() {
+  local src dst_config sm_home out receipt scope bad
+  scope=${PUB_TARGET:-github.com/kunchenguid/firstmate}
+  src="$TMP_ROOT/resolved-src-home/config"
+  sm_home="$TMP_ROOT/resolved-sm"
+  dst_config="$sm_home/config"
+  mkdir -p "$src" "$dst_config" "$sm_home/state" "$sm_home/data"
+  : > "$sm_home/.fm-secondmate-home"
+  receipt="$dst_config/.fm-inherit-firstmate-role.generation"
+
+  for bad in symlink two-directives; do
+    rm -f "$src/firstmate-role"
+    printf '# operator note\nmaintainer %s\n' "$scope" > "$src/firstmate-role"
+    FM_INHERITABLE_CONFIG=firstmate-role propagate_inheritable_config "$src" "$dst_config" \
+      || fail "propagation of a valid primary grant failed"
+    out=$(run_role "$sm_home" report)
+    assert_equals "fm-role: maintainer $scope (inherited)" "$out" "a valid primary grant must be inherited"
+
+    rm -f "$src/firstmate-role"
+    case $bad in
+    symlink)
+      printf 'maintainer %s\n' "$scope" > "$TMP_ROOT/resolved-symlink-target"
+      ln -s "$TMP_ROOT/resolved-symlink-target" "$src/firstmate-role"
+      ;;
+    two-directives)
+      printf 'maintainer %s\nuser\n' "$scope" > "$src/firstmate-role"
+      ;;
+    esac
+    out=$(FM_HOME="$TMP_ROOT/resolved-src-home" FM_CONFIG_OVERRIDE="$src" "$ROLE" report 2>&1)
+    assert_contains "$out" "fm-role: user" "the $bad primary role file must resolve to user on the primary"
+    FM_INHERITABLE_CONFIG=firstmate-role propagate_inheritable_config "$src" "$dst_config" \
+      || fail "propagation of a rejected $bad primary role failed"
+    assert_absent "$dst_config/firstmate-role" "a rejected $bad primary role must not be copied downstream"
+    [ "$(sed -n '4p' "$receipt")" = absent ] || fail "a rejected $bad primary role must record an absent receipt"
+    out=$(run_role "$sm_home" report)
+    assert_equals "fm-role: user (inherited)" "$out" "a rejected $bad primary role must revoke the secondmate grant"
+  done
+  pass "secondmate home: a primary role its own resolver rejects propagates as revocation"
 }
 
 # --- delivery contract rendering --------------------------------------------
@@ -521,9 +614,11 @@ test_check_user_home_refused_on_self_repo
 test_check_foreign_project_passes_through
 test_check_maintainer_scope_authorizes
 test_check_wrong_scope_and_remote_presence_do_not_authorize
+test_check_equivalent_remote_spellings_are_one_repo
 test_check_task_consent_authorizes_one_task
 test_secondmate_cannot_self_grant
 test_secondmate_inheritance_receipt_lifecycle
+test_secondmate_inherits_only_resolved_primary_role
 test_dod_block_renders_and_bounds_consent
 test_brief_consent_flag_bounds
 test_brief_self_repo_pre_gate

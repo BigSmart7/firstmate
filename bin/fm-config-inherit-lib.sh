@@ -75,6 +75,8 @@
 #
 # shellcheck source=bin/fm-startup-memory-budget-lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-startup-memory-budget-lib.sh"
+# shellcheck source=bin/fm-role-lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-role-lib.sh"
 
 # The one shared data file in this inheritance contract. There is deliberately
 # no shared learnings file.
@@ -91,7 +93,9 @@ FM_INHERITABLE_CONFIG="${FM_INHERITABLE_CONFIG:-crew-dispatch.json dispatch-neve
 # grant (or its recorded absence) authorizes a secondmate home only while
 # config/.fm-inherit-firstmate-role.generation there proves the exact bytes the
 # primary last published, so revocation converges and a locally planted or
-# stale grant is dead on arrival. The remote route's receiver already writes
+# stale grant is dead on arrival. Both routes publish the primary's resolved
+# role (fm_role_inherit_payload) rather than its raw file, so a primary file
+# its own resolver rejects propagates as an absence, never as a grant. The remote route's receiver already writes
 # that same receipt through its generation machinery; the local route commits
 # it in propagate_secondmate_inheritance, and a failed propagation removes it
 # rather than leaving a stale proof. bin/fm-role-lib.sh owns how the grant and
@@ -652,14 +656,14 @@ propagate_secondmate_inheritance() {
   [ -n "$src_config" ] || src_config="$src_home/config"
   [ -n "$src_data" ] || src_data="$src_home/data"
   rc=0
-  propagate_inheritable_config "$src_config" "$dest_home/config" || rc=1
+  propagate_inheritable_config "$src_config" "$dest_home/config" "$src_home" || rc=1
   propagate_shared_captain_preferences "$src_data" "$dest_home/data" || rc=1
   return "$rc"
 }
 
 propagate_inheritable_config() {
-  local src_config=$1 dest_config=$2 item src dest source_present reason rc
-  local prior_dest_config=${FM_INHERIT_DEST_CONFIG-}
+  local src_config=$1 dest_config=$2 src_home=${3:-${1%/*}} item src dest source_present reason rc
+  local prior_dest_config=${FM_INHERIT_DEST_CONFIG-} role_stage=
   [ -n "$src_config" ] || return 1
   [ -n "$dest_config" ] || return 1
   rc=0
@@ -669,7 +673,11 @@ propagate_inheritable_config() {
   FM_INHERIT_ROLE_RECEIPT_FAILED=
   for item in $FM_INHERITABLE_CONFIG; do
     case "$item" in
-      ''|/*|.|..|../*|*/../*|*/..) FM_INHERIT_DEST_CONFIG=$prior_dest_config; return 1 ;;
+      ''|/*|.|..|../*|*/../*|*/..)
+        FM_INHERIT_DEST_CONFIG=$prior_dest_config
+        [ -z "$role_stage" ] || rm -rf "$role_stage"
+        return 1
+        ;;
     esac
     if [ "${FM_CONFIG_INHERIT_LIVE:-0}" = 1 ] && fm_config_inherit_item_session_scoped "$item"; then
       record_inheritable_config_result "$item" unchanged "session-scoped"
@@ -677,6 +685,17 @@ propagate_inheritable_config() {
     fi
     src="$src_config/$item"
     dest="$dest_config/$item"
+    if [ "$item" = firstmate-role ]; then
+      if ! role_stage=$(mktemp -d "${TMPDIR:-/tmp}/fm-inherit-role.XXXXXX" 2>/dev/null) ||
+        ! fm_role_inherit_payload "$src_home" "$src_config" "$role_stage/$item"; then
+        reason="cannot resolve the primary role"
+        warn_inheritable_config_error "$item" "$src" "$reason"
+        record_inheritable_config_result "$item" error "$reason"
+        rc=1
+        continue
+      fi
+      src="$role_stage/$item"
+    fi
     if ! source_present=$(fm_config_source_present "$src"); then
       reason="cannot inspect primary source"
       warn_inheritable_config_error "$item" "$src" "$reason"
@@ -770,6 +789,7 @@ propagate_inheritable_config() {
     fi
   done
   FM_INHERIT_DEST_CONFIG=$prior_dest_config
+  [ -z "$role_stage" ] || rm -rf "$role_stage"
   [ -z "${FM_INHERIT_ROLE_RECEIPT_FAILED:-}" ] || rc=1
   return "$rc"
 }
