@@ -8,7 +8,7 @@
 #   report   prints one line: fm-role: <user|maintainer> [<scope>] (<source>)
 #            and, when a malformed or unverified input forced a closed result,
 #            " - <narrow reason>". The default with no config is plain
-#            "fm-role: user". bin/fm-session-start.sh emits this line in the
+#            "fm-role: user (default)". bin/fm-session-start.sh emits this line in the
 #            startup digest; it makes no network or gh call.
 #
 #   check    evaluates the self-repository publication gate for a task whose

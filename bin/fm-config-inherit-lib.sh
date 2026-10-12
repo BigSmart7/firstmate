@@ -92,11 +92,13 @@ FM_INHERITABLE_CONFIG="${FM_INHERITABLE_CONFIG:-crew-dispatch.json dispatch-neve
 # firstmate-role additionally carries a proof-of-state receipt: a scoped role
 # grant (or its recorded absence) authorizes a secondmate home only while
 # config/.fm-inherit-firstmate-role.generation there proves the exact bytes the
-# primary last published, so revocation converges and a locally planted or
-# stale grant is dead on arrival. Both routes publish the primary's resolved
-# role (fm_role_inherit_payload) rather than its raw file, so a primary file
-# its own resolver rejects propagates as an absence, never as a grant. The remote route's receiver already writes
-# that same receipt through its generation machinery; the local route commits
+# primary last published, so revocation converges and a grant without a matching
+# receipt is dead on arrival. The receipt proves consistency, not provenance;
+# deliberately forged local records are out of scope. Both routes publish the
+# primary's resolved role (fm_role_inherit_payload) rather than its raw file, so
+# a primary file its own resolver rejects propagates as an absence, never as a
+# grant. The remote route's receiver already writes that same receipt through
+# its generation machinery; the local route commits
 # it in propagate_secondmate_inheritance, and a failed propagation removes it
 # rather than leaving a stale proof. bin/fm-role-lib.sh owns how the grant and
 # receipt are interpreted.

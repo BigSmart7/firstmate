@@ -34,10 +34,7 @@ See the [no-mistakes quick start](https://kunchenguid.github.io/no-mistakes/star
 
 ## Agent-driven contributions
 
-Most people clone this repo to *use* firstmate, not to maintain it, and a running home reflects that: every home defaults to firstmate user/operator with no upstream publication authority.
-An agent that hits a firstmate bug under that default diagnoses privately, applies a local workaround, and may leave a sanitized local issue draft or a proposed patch for the operator - but it never pushes, forks, files an issue, comments, or opens a pull request on its own.
-To let a home contribute here, opt in explicitly: write `maintainer github.com/kunchenguid/firstmate` into `config/firstmate-role` (schema: [docs/configuration.md](docs/configuration.md#firstmate-role-configfirstmate-role)), or approve one specific contribution at dispatch time.
-Neither grant is inferred from GitHub credentials, permissions, remotes, or environment.
+Before dispatching an agent-driven contribution, follow the [Firstmate role and task-consent policy](docs/configuration.md#firstmate-role-configfirstmate-role); clone-and-run use alone grants no publication authority.
 
 ## Maintaining required checks
 
@@ -92,7 +89,7 @@ Coordinate any workflow rollback with its required-check names so a retired chec
 Tracked changes to firstmate itself - `AGENTS.md`, `README.md`, `CONTRIBUTING.md`, `.tasks.toml`, `.github/workflows/`, `bin/`, `.agents/skills/`, and `skills/` - ship through the `no-mistakes` pipeline on a feature branch and require an explicit merge approval.
 Before making any such change, load the agent-only `firstmate-coding-guidelines` skill (`.agents/skills/firstmate-coding-guidelines/SKILL.md`).
 It has the knowledge-placement rules that keep `AGENTS.md` from regrowing after each diet pass.
-`bin/fm-brief.sh --project` detects that a task's project is firstmate itself for the publication gate (`bin/fm-role-lib.sh`), but nothing tells the scaffold the work needs the coding guidelines, so firstmate adds this skill's load line to firstmate-repo briefs by hand.
+Firstmate adds this skill's load line to firstmate-repo briefs by hand; the [coding-guidelines skill](.agents/skills/firstmate-coding-guidelines/SKILL.md#trigger-hygiene) owns the scaffold's detection limits.
 A crewmate picking up such a brief should load the skill even if the brief predates this instruction.
 When supervising live crewmates, keep firstmate's own long validation or build commands in the background so watcher wakes can still be handled.
 Crewmate validation follows the installed no-mistakes version's SKILL.md and live `axi` help instead of duplicating gate mechanics in firstmate docs.

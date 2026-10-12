@@ -37,11 +37,7 @@ This posture covers firstmate self-repair exactly the same way it covers a dispa
 
 ### Maintainer opt-in (standing)
 
-The operator writes `config/firstmate-role` by hand - it is gitignored and never travels through git.
-The file holds one directive line: `user`, or `maintainer <host>/<owner>/<repo>` naming the one upstream repository this home develops firstmate for.
-A fork maintainer contributing to the parent repository uses one-task consent, not a second standing scope.
-`docs/configuration.md` "Firstmate role" owns the operator-facing schema; `bin/fm-role-lib.sh` owns parsing, and `bin/fm-role.sh report` prints the resolved role (also surfaced in the session-start digest's HOME ROLE subsection).
-A malformed, unreadable, or unverifiable file resolves to user, never to a guess.
+Only the operator may opt the primary home in; follow the [Firstmate role schema and resolution policy](../../../docs/configuration.md#firstmate-role-configfirstmate-role), rather than creating a grant on the operator's behalf.
 
 ### One-task contribution consent (bounded)
 
@@ -52,8 +48,7 @@ The captain's approval must be a current explicit instruction naming the contrib
 
 ## Where the boundary is enforced
 
-The gate is code, not memory: `bin/fm-role-lib.sh`'s `fm_role_gate_self_publish` decides whether a task on firstmate's own repository may carry a publishing contract, by repository lineage (a shared git common dir, or a project holding a root commit of the code root's history, which every fork, the parent, and any clone of either share) rather than a freeform repo name or remote URL.
-Lineage is computed offline; when it cannot be determined (for example a shallow clone sharing no root commit) the gate refuses.
+The gate is code, not memory: `bin/fm-role-lib.sh`'s `fm_role_gate_self_publish` applies the [lineage and publication-target policy](../../../docs/configuration.md#firstmate-role-configfirstmate-role) to publishing contracts.
 
 - `bin/fm-brief.sh --project <dir>` refuses to scaffold a publishing ship brief the home cannot authorize.
 - `bin/fm-spawn.sh` refuses to launch a ship task on this repository without a maintainer scope or matching task consent, and refuses a brief whose `upstream-consent=` disagrees with the flag.
@@ -64,7 +59,6 @@ An authorized contribution then flows through the task's normal delivery contrac
 
 A gate refusal names the exact remedy: write `maintainer <scope>` into `config/firstmate-role`, or pass `--upstream-consent <scope>` for that one task with the captain's explicit approval.
 Never work around a refusal by pointing the task at a second checkout, fork, or parent clone; `fm_role_self_repo` treats every repository sharing firstmate's lineage as firstmate's own.
-A publishing contract also needs a determinable publication target (an upstream, github, or origin remote) matching the maintainer scope or the task consent; with no target it is refused even under consent.
 
 ## Updating is not contributing
 
@@ -73,7 +67,5 @@ The boundary covers only traffic that writes to the upstream repository.
 
 ## Secondmates
 
-A secondmate home inherits the primary's resolved role through the same primary-authoritative propagation as other inheritable config (`bin/fm-config-inherit-lib.sh`), local and remote routes alike; a primary file its own resolver rejects (malformed, symlinked, unverified) propagates as revocation, never as a grant.
-The grant is honored only while `config/.fm-inherit-firstmate-role.generation` proves the exact bytes the primary last published, so a child never gains through supported propagation a grant the primary does not resolve, and a stale proof authorizes nothing: a removed or divergent receipt, a role file with no receipt, and a failed propagation all resolve to user.
-The receipt proves consistency, not provenance - it prevents accidental publication through supported paths and is not a security boundary against a process that deliberately forges local records.
-Revocation converges the same way - the primary deleting its role file propagates an `absent` receipt downstream.
+Follow the [role inheritance and receipt limits](../../../docs/configuration.md#firstmate-role-configfirstmate-role); supported propagation must never grant a child a role the primary does not resolve.
+Deliberately forged local records are outside this accidental-publication safeguard, not a provenance guarantee.
