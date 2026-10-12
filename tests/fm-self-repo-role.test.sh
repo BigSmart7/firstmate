@@ -8,8 +8,9 @@
 # the operator into config/firstmate-role, or a bounded per-task
 # --upstream-consent recorded in the delivery contract. Role is never inferred
 # from remotes, credentials, or repository ownership. In a secondmate home the
-# grant is trusted only when the inheritance receipt proves the exact bytes
-# the parent published. local-only publishes nothing and never reaches the
+# grant is honored only when the inheritance receipt matches the exact bytes
+# the parent published; the receipt guards supported propagation, not forged
+# local records. local-only publishes nothing and never reaches the
 # gate.
 #
 # These tests exercise the real entry points only: bin/fm-role.sh, the
@@ -53,6 +54,41 @@ make_role_home() {
     printf '%s\n' "$content" > "$home/config/firstmate-role"
   fi
   printf '%s\n' "$home"
+}
+
+# git_commit <repo> <msg> - an empty commit with a fixed fixture identity.
+git_commit() {
+  git -C "$1" -c user.name=fixture -c user.email=fixture@example.invalid \
+    commit -q --allow-empty -m "$2" || fail "could not commit in $1"
+}
+
+# make_lineage_root <name> <origin-url> - a fixture firstmate code root with
+# two commits and the given origin. Echoes its path.
+make_lineage_root() {
+  local root="$TMP_ROOT/$1"
+  git init -q "$root" || fail "could not initialize $1 fixture"
+  git_commit "$root" root
+  git_commit "$root" second
+  git -C "$root" remote add origin "$2"
+  printf '%s\n' "$root"
+}
+
+# clone_with_origin <src> <name> <origin-url> - a separate clone of <src>
+# (its own git dir, full history) whose origin is rewritten. Echoes its path.
+clone_with_origin() {
+  local clone="$TMP_ROOT/$2"
+  git clone -q --shared --no-checkout "$1" "$clone" || fail "could not clone $1"
+  git -C "$clone" remote set-url origin "$3"
+  printf '%s\n' "$clone"
+}
+
+# check_as <code-root> <home> <args...> - fm-role.sh check against a fixture
+# code root.
+check_as() {
+  local root=$1 home=$2
+  shift 2
+  FM_ROOT_OVERRIDE="$root" FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" \
+    "$ROLE" check "$@" 2>&1
 }
 
 # run_role <home> <args...> - fm-role.sh pinned to a fixture home. FM_ROOT stays
@@ -178,13 +214,11 @@ test_check_wrong_scope_and_remote_presence_do_not_authorize() {
   assert_contains "$out" "no publication authority for $PUB_TARGET" \
     "the refusal must name the target the grant did not cover"
 
-  # A second clone of the same upstream (equal publication target, different
-  # git dir) is still firstmate's repository: the boundary follows the remote
-  # identity, not the checkout path.
+  # A second clone of the same upstream (shared history, different git dir)
+  # is still firstmate's repository: the boundary follows lineage, not the
+  # checkout path.
   home=$(make_role_home check-clone)
-  clone="$TMP_ROOT/second-clone"
-  git init -q "$clone" || fail "could not initialize second-clone fixture"
-  git -C "$clone" remote add origin "$ORIGIN_URL"
+  clone=$(clone_with_origin "$ROOT" second-clone "$ORIGIN_URL")
   out=$(run_role "$home" check "$clone"); rc=$?
   expect_code 1 "$rc" "a second clone of the same upstream must still be gated"
   assert_contains "$out" "user/operator" "a second clone must be treated as firstmate's own repository"
@@ -192,30 +226,75 @@ test_check_wrong_scope_and_remote_presence_do_not_authorize() {
 }
 
 # Equivalent remote spellings of one upstream (trailing slash, .git suffix,
-# scp form) must normalize to one identity, so a second clone stays gated.
-# The code root here is a fixture with a known remote, independent of this
+# scp form) must normalize to one publication target, so the maintainer scope
+# matches every clone. The code root is a fixture, independent of this
 # checkout's own remotes.
 test_check_equivalent_remote_spellings_are_one_repo() {
-  local root clone url user_home maint_home out rc
-  root="$TMP_ROOT/spelling-root"
-  git init -q "$root" || fail "could not initialize spelling-root fixture"
-  git -C "$root" remote add origin https://github.com/kunchenguid/firstmate
+  local root clone url user_home maint_home out rc n=0
+  root=$(make_lineage_root spelling-root https://github.com/kunchenguid/firstmate)
   user_home=$(make_role_home spelling-user)
   maint_home=$(make_role_home spelling-maint 'maintainer github.com/kunchenguid/firstmate')
   for url in https://github.com/kunchenguid/firstmate.git/ \
     https://github.com/kunchenguid/firstmate/ \
     git@github.com:kunchenguid/firstmate.git/; do
-    clone="$TMP_ROOT/spelling-clone-$(printf '%s' "$url" | tr -c 'A-Za-z0-9' '_')"
-    git init -q "$clone" || fail "could not initialize spelling-clone fixture"
-    git -C "$clone" remote add origin "$url"
-    out=$(FM_ROOT_OVERRIDE="$root" FM_HOME="$user_home" FM_CONFIG_OVERRIDE="$user_home/config" \
-      "$ROLE" check "$clone" 2>&1); rc=$?
-    expect_code 1 "$rc" "a clone of $url must be gated as the same repository (got: $out)"
-    out=$(FM_ROOT_OVERRIDE="$root" FM_HOME="$maint_home" FM_CONFIG_OVERRIDE="$maint_home/config" \
-      "$ROLE" check "$clone" 2>&1); rc=$?
+    n=$((n + 1))
+    clone=$(clone_with_origin "$root" "spelling-clone-$n" "$url")
+    out=$(check_as "$root" "$user_home" "$clone"); rc=$?
+    expect_code 1 "$rc" "a clone of $url must be gated as firstmate (got: $out)"
+    out=$(check_as "$root" "$maint_home" "$clone"); rc=$?
     expect_code 0 "$rc" "the maintainer scope must cover a clone of $url (got: $out)"
   done
   pass "fm-role.sh check: equivalent remote spellings resolve to one publication target"
+}
+
+# Firstmate run from a fork, dispatching to a separate clone of the parent:
+# their origins and git dirs differ, but they share firstmate's root commit,
+# so the task still meets the role/consent gate. A fork's maintainer scope
+# does not cover the parent; one-task consent for the parent does.
+test_check_fork_lineage_reaches_the_gate() {
+  local fork parent user_home fork_home out rc
+  fork=$(make_lineage_root fork-root https://github.com/someone/firstmate-fork)
+  parent=$(clone_with_origin "$fork" parent-clone https://github.com/kunchenguid/firstmate)
+  user_home=$(make_role_home fork-user)
+  out=$(check_as "$fork" "$user_home" "$parent"); rc=$?
+  expect_code 1 "$rc" "a parent clone dispatched from a fork code root must be gated (got: $out)"
+  assert_contains "$out" "no publication authority for github.com/kunchenguid/firstmate" \
+    "the refusal must name the parent publication target"
+
+  fork_home=$(make_role_home fork-maint 'maintainer github.com/someone/firstmate-fork')
+  out=$(check_as "$fork" "$fork_home" "$parent"); rc=$?
+  expect_code 1 "$rc" "a fork maintainer scope must not cover the parent (got: $out)"
+
+  out=$(check_as "$fork" "$user_home" "$parent" upstream-consent github.com/kunchenguid/firstmate); rc=$?
+  expect_code 0 "$rc" "one-task consent for the parent must authorize (got: $out)"
+
+  git init -q "$TMP_ROOT/fork-unrelated" || fail "could not initialize unrelated fixture"
+  git_commit "$TMP_ROOT/fork-unrelated" unrelated
+  git -C "$TMP_ROOT/fork-unrelated" remote add origin https://github.com/kunchenguid/firstmate
+  out=$(check_as "$fork" "$user_home" "$TMP_ROOT/fork-unrelated"); rc=$?
+  expect_code 2 "$rc" "an unrelated history is not firstmate even with a firstmate remote (got: $out)"
+  pass "fm-role.sh check: repository lineage, not remotes, identifies firstmate across forks"
+}
+
+# Lineage that cannot be determined refuses, and a firstmate-lineage project
+# with no determinable publication target is refused even under consent.
+test_check_undeterminable_lineage_and_target_refuse() {
+  local root shallow bare home out rc
+  root=$(make_lineage_root undet-root https://github.com/kunchenguid/firstmate)
+  home=$(make_role_home undet-user)
+  shallow="$TMP_ROOT/undet-shallow"
+  git clone -q --depth 1 "file://$root" "$shallow" || fail "could not make a shallow clone"
+  git -C "$shallow" remote set-url origin https://github.com/kunchenguid/firstmate
+  out=$(check_as "$root" "$home" "$shallow" upstream-consent github.com/kunchenguid/firstmate); rc=$?
+  expect_code 1 "$rc" "a shallow clone sharing no root commit must be refused (got: $out)"
+  assert_contains "$out" "cannot determine whether" "the refusal must name undeterminable lineage"
+
+  bare=$(clone_with_origin "$root" undet-no-remote https://github.com/kunchenguid/firstmate)
+  git -C "$bare" remote remove origin
+  out=$(check_as "$root" "$home" "$bare" upstream-consent github.com/kunchenguid/firstmate); rc=$?
+  expect_code 1 "$rc" "consent must not authorize an undeterminable publication target (got: $out)"
+  assert_contains "$out" "no publication target can be determined" "the refusal must name the missing target"
+  pass "fm-role.sh check: undeterminable lineage or publication target refuses"
 }
 
 test_check_task_consent_authorizes_one_task() {
@@ -238,15 +317,15 @@ test_check_task_consent_authorizes_one_task() {
 
 # --- secondmate homes: receipt-proven grants only ---------------------------
 
-# A secondmate home (its .fm-secondmate-home marker) can never grant itself a
-# role: a planted role file without a propagation receipt resolves to user.
+# In a secondmate home (its .fm-secondmate-home marker) a role file without a
+# propagation receipt resolves to user.
 test_secondmate_cannot_self_grant() {
   local home out rc
   home=$(make_role_home sm-selfgrant "maintainer ${PUB_TARGET:-github.com/a/b}")
   : > "$home/.fm-secondmate-home"
   out=$(run_role "$home" report)
   assert_contains "$out" "fm-role: user" "a self-planted role file must not grant a secondmate anything"
-  assert_contains "$out" "secondmate cannot grant itself" "the report must name the self-grant refusal"
+  assert_contains "$out" "no propagation receipt" "the report must name the missing receipt"
   if [ -n "$PUB_TARGET" ]; then
     out=$(run_role "$home" check "$ROOT"); rc=$?
     expect_code 1 "$rc" "a self-granted secondmate must be refused at the gate"
@@ -287,29 +366,14 @@ test_secondmate_inheritance_receipt_lifecycle() {
   assert_contains "$out" "unverified inherited grant" "a diverged grant must name the unverified state"
   assert_contains "$out" "diverges from the receipt" "a diverged grant must name the divergence"
 
-  # A receipt for bytes the parent never published (self-written receipt) is
-  # equally unproven: forge the receipt against the tampered file and the
-  # grant still dies - only the parent's own publish path writes it.
+  # The receipt proves consistency, not provenance: a deliberately forged
+  # local record is out of scope. Rewriting the receipt here only exercises
+  # how an inherited file with a second directive parses: it is malformed as
+  # a whole even when its receipt matches the exact bytes.
   gen=$(sed -n '1p' "$receipt")
-  {
-    printf '%s\n' "$((gen + 1))"
-    wc -c <"$dst_config/firstmate-role" | tr -d '[:space:]' | awk '{printf "%s\n", $1}'
-    fm_role_sha256_stdin <"$dst_config/firstmate-role"
-    printf 'put\n'
-  } > "$receipt"
-  out=$(run_role "$sm_home" report)
-  assert_contains "$out" "fm-role: maintainer github.com/evil/scope" \
-    "an exact-byte receipt does legitimize bytes a parent publish could have produced - the gate still requires the matching self-repo scope"
-  if [ -n "$PUB_TARGET" ]; then
-    out=$(run_role "$sm_home" check "$ROOT"); rc=$?
-    expect_code 1 "$rc" "a forged-scope inherited grant covers no firstmate target"
-  fi
-
-  # An inherited file that carries a second directive is malformed as a whole,
-  # even when its receipt proves the exact bytes.
   printf 'maintainer %s\nuser\n' "${PUB_TARGET:-github.com/kunchenguid/firstmate}" > "$dst_config/firstmate-role"
   {
-    printf '%s\n' "$((gen + 2))"
+    printf '%s\n' "$((gen + 1))"
     wc -c <"$dst_config/firstmate-role" | tr -d '[:space:]' | awk '{printf "%s\n", $1}'
     fm_role_sha256_stdin <"$dst_config/firstmate-role"
     printf 'put\n'
@@ -336,7 +400,7 @@ test_secondmate_inheritance_receipt_lifecycle() {
   out=$(run_role "$sm_home" report)
   assert_contains "$out" "fm-role: user" "a post-revocation self-plant must grant nothing"
   assert_contains "$out" "unverified inherited grant" "a self-plant after revocation must be named unverified"
-  pass "secondmate home: inherited grants are receipt-proven, self-grants and revoked grants dead"
+  pass "secondmate home: inherited grants need a matching receipt; receipt-less and revoked grants are dead"
 }
 
 # The parent publishes its resolved role, not its raw file: a primary role
@@ -615,6 +679,8 @@ test_check_foreign_project_passes_through
 test_check_maintainer_scope_authorizes
 test_check_wrong_scope_and_remote_presence_do_not_authorize
 test_check_equivalent_remote_spellings_are_one_repo
+test_check_fork_lineage_reaches_the_gate
+test_check_undeterminable_lineage_and_target_refuse
 test_check_task_consent_authorizes_one_task
 test_secondmate_cannot_self_grant
 test_secondmate_inheritance_receipt_lifecycle

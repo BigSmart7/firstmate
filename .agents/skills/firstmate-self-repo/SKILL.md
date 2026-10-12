@@ -52,7 +52,8 @@ The captain's approval must be a current explicit instruction naming the contrib
 
 ## Where the boundary is enforced
 
-The gate is code, not memory: `bin/fm-role-lib.sh`'s `fm_role_gate_self_publish` decides whether a task on firstmate's own repository may carry a publishing contract, by git identity (shared common dir, or equal normalized upstream target) rather than a freeform repo name.
+The gate is code, not memory: `bin/fm-role-lib.sh`'s `fm_role_gate_self_publish` decides whether a task on firstmate's own repository may carry a publishing contract, by repository lineage (a shared git common dir, or a project holding a root commit of the code root's history, which every fork, the parent, and any clone of either share) rather than a freeform repo name or remote URL.
+Lineage is computed offline; when it cannot be determined (for example a shallow clone sharing no root commit) the gate refuses.
 
 - `bin/fm-brief.sh --project <dir>` refuses to scaffold a publishing ship brief the home cannot authorize.
 - `bin/fm-spawn.sh` refuses to launch a ship task on this repository without a maintainer scope or matching task consent, and refuses a brief whose `upstream-consent=` disagrees with the flag.
@@ -62,7 +63,8 @@ The gate is code, not memory: `bin/fm-role-lib.sh`'s `fm_role_gate_self_publish`
 An authorized contribution then flows through the task's normal delivery contract - usually no-mistakes - like any other project; the grant answers only "may this publish", never "how".
 
 A gate refusal names the exact remedy: write `maintainer <scope>` into `config/firstmate-role`, or pass `--upstream-consent <scope>` for that one task with the captain's explicit approval.
-Never work around a refusal by pointing the task at a second checkout of the same upstream; `fm_role_self_repo` treats equal normalized publication targets as the same repository.
+Never work around a refusal by pointing the task at a second checkout, fork, or parent clone; `fm_role_self_repo` treats every repository sharing firstmate's lineage as firstmate's own.
+A publishing contract also needs a determinable publication target (an upstream, github, or origin remote) matching the maintainer scope or the task consent; with no target it is refused even under consent.
 
 ## Updating is not contributing
 
@@ -72,5 +74,6 @@ The boundary covers only traffic that writes to the upstream repository.
 ## Secondmates
 
 A secondmate home inherits the primary's resolved role through the same primary-authoritative propagation as other inheritable config (`bin/fm-config-inherit-lib.sh`), local and remote routes alike; a primary file its own resolver rejects (malformed, symlinked, unverified) propagates as revocation, never as a grant.
-The grant is honored only while `config/.fm-inherit-firstmate-role.generation` proves the exact bytes the primary last published, so a child can never grant itself the role and a stale proof authorizes nothing: a removed or divergent receipt, a locally planted role file, and a failed propagation all resolve to user.
+The grant is honored only while `config/.fm-inherit-firstmate-role.generation` proves the exact bytes the primary last published, so a child never gains through supported propagation a grant the primary does not resolve, and a stale proof authorizes nothing: a removed or divergent receipt, a role file with no receipt, and a failed propagation all resolve to user.
+The receipt proves consistency, not provenance - it prevents accidental publication through supported paths and is not a security boundary against a process that deliberately forges local records.
 Revocation converges the same way - the primary deleting its role file propagates an `absent` receipt downstream.

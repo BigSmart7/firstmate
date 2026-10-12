@@ -9,9 +9,9 @@
 # hand-edit backlog files too, primary config/backend pins that home's local
 # runtime-backend default for future spawns, primary config/startup-memory-budget
 # bounds that home's startup-memory curation, primary config/firstmate-role
-# carries the primary's firstmate-repository role grant with a proof-of-state
-# receipt (so a secondmate can inherit, but never grant itself, the maintainer
-# role), and primary
+# carries the primary's resolved firstmate-repository role with a
+# proof-of-state receipt (so a secondmate inherits only what the primary
+# resolves), and primary
 # config/herdr-presentation-spaces carries the same Herdr presentation-projection
 # preference - an absent primary file and an absent destination file both mean
 # the same unconfigured default, so the generic absence mirror below converges

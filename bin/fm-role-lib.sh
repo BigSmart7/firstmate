@@ -23,19 +23,25 @@
 # destination. In a secondmate home (marked by .fm-secondmate-home) a role file
 # authorizes nothing on its own: it is trusted only when the existing
 # config-inheritance receipt config/.fm-inherit-firstmate-role.generation proves
-# the exact bytes the parent last published there, so a child cannot upgrade
-# itself and a stale or unproven grant is dead on arrival. The parent publishes
-# its resolved role (fm_role_inherit_payload), never its raw file, so a grant
-# the parent's own resolver rejects propagates as revocation.
+# the exact bytes the parent last published there, so a stale or unproven grant
+# is dead on arrival. The parent publishes its resolved role
+# (fm_role_inherit_payload), never its raw file, so a child never gains through
+# supported propagation a grant the parent does not resolve. The receipt proves
+# consistency, not provenance: it prevents accidental publication through
+# supported paths and is not a security boundary against a process that
+# deliberately forges local records.
 #
 # Self-repository detection compares the task's project dir against the running
-# code root by git identity - the shared common dir covers linked worktrees and
-# the code root itself, and equal normalized publication targets cover a second
-# clone of the same upstream. The normalized target is the first remote named
-# upstream, github, or origin (the order gh prefers when resolving a default
-# repository), reduced to lowercase host/owner/repo; a local-path remote is
-# resolved one hop through that repository's own origin, and left as path:<abs>
-# when unreadable. An unknown target never silently permits.
+# code root by repository lineage, offline: a shared git common dir covers
+# linked worktrees and the code root itself, and a project holding a root commit
+# of the code root's history covers any fork, the parent, and any clone of
+# either. Lineage that cannot be determined (no code root history, or a shallow
+# side sharing no root) refuses rather than permits. The publication target is
+# compared only against a maintainer scope or task consent: the first remote
+# named upstream, github, or origin (the order gh prefers when resolving a
+# default repository), reduced to lowercase host/owner/repo; a local-path remote
+# is resolved one hop through that repository's own origin, and left as
+# path:<abs> when unreadable. An unknown target never permits.
 #
 # Public functions:
 #   fm_role_file <config-dir>            - the role file path
@@ -43,7 +49,7 @@
 #   fm_role_scope_norm <scope>           - canonical comparison form
 #   fm_role_remote_identity <url> [<dir>]- host/owner/repo or path:<abs> or empty
 #   fm_role_publication_target <git-dir> - identity a default publication reaches
-#   fm_role_self_repo <project> <root>   - 0 when the task is on this firstmate
+#   fm_role_self_repo <project> <root>   - 0 firstmate lineage, 1 not, 2 unknown
 #   fm_role_parse_file <file>            - sets FM_ROLE/FM_ROLE_SCOPE/FM_ROLE_DIAG
 #   fm_role_resolve <home> <config-dir>  - effective role; adds FM_ROLE_SOURCE
 #   fm_role_inherit_payload <home> <config-dir> <out-file>
@@ -231,17 +237,33 @@ fm_role_publication_target() {
   fm_role_remote_identity "$url" "$dir"
 }
 
-# fm_role_self_repo <project-dir> <code-root> - 0 when the task's project is
-# firstmate's own repository: a shared git common dir (the code root itself or a
-# linked worktree of it) or an equal non-empty publication target.
+# fm_role_shallow <dir> - 0 when <dir> is a shallow git repository.
+fm_role_shallow() {
+  [ "$(git -C "$1" rev-parse --is-shallow-repository 2>/dev/null)" = true ]
+}
+
+# fm_role_self_repo <project-dir> <code-root> - rc 0 when the task's project
+# shares firstmate's lineage: a shared git common dir (the code root itself or
+# a linked worktree of it), or a project holding a root commit of the code
+# root's history. rc 1 when the project is not a git repository or provably
+# shares no root. rc 2 when lineage cannot be determined: the code root has no
+# history, or either side is shallow and no root matched. Offline only; lazy
+# fetching of missing objects is disabled.
 fm_role_self_repo() {
-  local proj=$1 root=$2 pa pb ta tb
+  local proj=$1 root=$2 pa pb roots c
   pa=$(fm_role_git_common_dir "$proj")
+  [ -n "$pa" ] || return 1
   pb=$(fm_role_git_common_dir "$root")
-  [ -n "$pa" ] && [ -n "$pb" ] && [ "$pa" = "$pb" ] && return 0
-  ta=$(fm_role_publication_target "$proj")
-  tb=$(fm_role_publication_target "$root")
-  [ -n "$ta" ] && [ -n "$tb" ] && [ "$ta" = "$tb" ]
+  [ -n "$pb" ] && [ "$pa" = "$pb" ] && return 0
+  roots=$(git -C "$root" rev-list --max-parents=0 HEAD 2>/dev/null) || roots=
+  [ -n "$roots" ] || return 2
+  for c in $roots; do
+    GIT_NO_LAZY_FETCH=1 git -C "$proj" cat-file -e "$c^{commit}" 2>/dev/null && return 0
+  done
+  if fm_role_shallow "$root" || fm_role_shallow "$proj"; then
+    return 2
+  fi
+  return 1
 }
 
 # fm_role_parse_file <file> - parse one role file. Sets FM_ROLE, FM_ROLE_SCOPE,
@@ -426,7 +448,7 @@ fm_role_resolve() {
       return 0
     fi
     if [ -e "$role_file" ] || [ -L "$role_file" ]; then
-      FM_ROLE_DIAG="unverified inherited grant: a role file exists with no propagation receipt, and a secondmate cannot grant itself the role"
+      FM_ROLE_DIAG="unverified inherited grant: a role file exists with no propagation receipt, and a secondmate gains the role only through propagation"
       return 0
     fi
     return 0
@@ -465,16 +487,22 @@ fm_role_inherit_payload() (
 # and the boundary does not apply. FM_ROLE_PUB_TARGET is the normalized
 # publication target when determinable.
 fm_role_gate_self_publish() {
-  local home=$1 config=$2 proj=$3 root=$4 consent=${5:-}
+  local home=$1 config=$2 proj=$3 root=$4 consent=${5:-} lineage=0
   FM_ROLE_PUB_TARGET=
   # shellcheck disable=SC2034 # Output global, read by the sourcing caller.
   FM_ROLE_PUB_AUTHORITY=
   # shellcheck disable=SC2034 # Output global, read by the sourcing caller.
   FM_ROLE_PUB_DENIAL=
-  if ! fm_role_self_repo "$proj" "$root"; then
+  fm_role_self_repo "$proj" "$root" || lineage=$?
+  if [ "$lineage" -eq 1 ]; then
     return 2
   fi
   FM_ROLE_PUB_TARGET=$(fm_role_publication_target "$proj")
+  if [ "$lineage" -eq 2 ]; then
+    # shellcheck disable=SC2034 # Output global, read by the sourcing caller.
+    FM_ROLE_PUB_DENIAL="cannot determine whether $proj shares firstmate's history (the code root $root has no readable history, or a shallow clone shares no root commit); fetch full history (git fetch --unshallow) before dispatching publishing work"
+    return 1
+  fi
   fm_role_resolve "$home" "$config"
   if [ -n "$consent" ]; then
     consent=$(fm_role_scope_norm "$consent")
@@ -485,14 +513,6 @@ fm_role_gate_self_publish() {
     fi
   fi
   if [ -z "$FM_ROLE_PUB_TARGET" ]; then
-    # A recorded consent names the exact repository the captain approved, so it
-    # bounds the publication even when no remote resolves it here; standing
-    # maintainer scope cannot, so it does not cover an undeterminable target.
-    if [ -n "$consent" ]; then
-      # shellcheck disable=SC2034 # Output global, read by the sourcing caller.
-      FM_ROLE_PUB_AUTHORITY="task consent for $consent"
-      return 0
-    fi
     # shellcheck disable=SC2034 # Output global, read by the sourcing caller.
     FM_ROLE_PUB_DENIAL="this task targets firstmate's own repository but no publication target can be determined (no upstream, github, or origin remote on $proj)"
     return 1
