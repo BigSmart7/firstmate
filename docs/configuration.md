@@ -573,6 +573,29 @@ See [`trace-context.md`](trace-context.md) for carrier semantics, supported rout
 
 See [`fleet-ledger.md`](fleet-ledger.md) for the opt-in setup, record contract, and limits.
 
+## Firstmate role (config/firstmate-role)
+
+The optional local, gitignored `config/firstmate-role` declares this home's relationship to the firstmate repository itself.
+Every home defaults to **user/operator** with no firstmate-upstream publication authority: ordinary project work and `/updatefirstmate` pulls are unaffected, but no ship task on the firstmate repository may carry a publishing contract, and a firstmate bug found in ordinary use is diagnosed and repaired locally only.
+
+The file holds exactly one directive line, with blank lines and `#` comment lines ignored:
+
+| Directive | Effect |
+| --- | --- |
+| `user` | The default; identical to an absent file. |
+| `maintainer <host>/<owner>/<repo> [<scope>...]` | This home may dispatch publishing work that targets each named firstmate upstream. |
+
+A scope names the publication target repository (where a pull request lands), normalized to lowercase for comparison, not a push destination.
+Write the file by hand; firstmate never edits it and it never travels through git.
+A malformed, unreadable, or symlinked file resolves to user/operator - the role fails closed rather than guessing.
+
+Authority is also available for one task at a time: `--upstream-consent <host>/<owner>/<repo>` on `bin/fm-brief.sh`, `bin/fm-spawn.sh`, and `bin/fm-promote.sh` records the captain's explicit approval in the task's delivery contract and metadata without changing the home's role.
+Role is never inferred from GitHub identity, forge permissions, remotes, repository ownership, authentication state, environment, or CI.
+`bin/fm-role.sh report` prints the resolved role with no network call, and the session-start digest shows it in the HOME ROLE subsection.
+
+`bin/fm-role-lib.sh` owns the fail-closed parser, self-repository detection, and the gate that `bin/fm-brief.sh`, `bin/fm-spawn.sh`, and `bin/fm-promote.sh` apply.
+In a secondmate home the file is honored only while the inheritance receipt `config/.fm-inherit-firstmate-role.generation` proves the exact bytes the primary last published (`bin/fm-config-inherit-lib.sh`); a locally planted or stale grant authorizes nothing.
+
 ## Waiting worker spends no turns (config/wait-no-turns)
 
 The optional local, gitignored `config/wait-no-turns` presence flag opts this home into keeping a waiting worker from spending turns until it is answered.
